@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/LeoAntunesBrombilla/tracingOpenTelemetry/serviceA/tracing"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"io"
 	"log"
 	"net/http"
@@ -15,7 +19,11 @@ func isValidCEP(cep string) bool {
 	return matched
 }
 
+var tracer = otel.Tracer("service_a")
+
 func validateAndForwardCEPHandler(w http.ResponseWriter, r *http.Request) {
+	_, validateCEPSpan := tracer.Start(context.Background(), "validateCEP")
+
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -36,14 +44,31 @@ func validateAndForwardCEPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cep := input.CEP
-	serviceBURL := fmt.Sprintf("http://service_b:8081/processCEP?cep=%s", url.QueryEscape(cep))
-	fmt.Println(serviceBURL)
+	validateCEPSpan.End()
 
-	resp, err := http.Get(serviceBURL)
-	fmt.Println("LALALALLALA")
+	ctx, span := otel.Tracer("service_a").Start(context.Background(), "callServiceB")
+	defer span.End()
+
+	serviceBURL := fmt.Sprintf("http://service_b:8081/processCEP?cep=%s", url.QueryEscape(cep))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", serviceBURL, nil)
 	if err != nil {
-		fmt.Println("LALALALLALA")
-		fmt.Println(err)
+		fmt.Println("Error passing the context", err)
+		return
+	}
+
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println("Error requesting ", err)
+		return
+	}
+
+	defer resp.Body.Close()
+	if err != nil {
 		http.Error(w, "Error forwarding request to Service B", http.StatusInternalServerError)
 		return
 	}
@@ -53,6 +78,7 @@ func validateAndForwardCEPHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	tracing.InitTracer()
 	http.HandleFunc("/validateCEP", validateAndForwardCEPHandler)
 
 	port := "8080"

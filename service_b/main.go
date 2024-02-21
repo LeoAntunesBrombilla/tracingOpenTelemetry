@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/LeoAntunesBrombilla/tracingOpenTelemetry/serviceB/tracing"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"io"
 	"log"
 	"net/http"
@@ -37,6 +41,11 @@ type TemperatureResponse struct {
 	TempC float64 `json:"temp_C"`
 	TempF float64 `json:"temp_F"`
 	TempK float64 `json:"temp_K"`
+}
+
+type FullResponse struct {
+	City string `json:"city"`
+	TemperatureResponse
 }
 
 func getViaCepData(baseUrl, cep string) (*ViaCep, error) {
@@ -88,13 +97,20 @@ func handleWeatherApiCall(baseUrl, location string) (*WeatherResponse, error) {
 	return &weather, nil
 }
 
+var tracer = otel.Tracer("service_b")
+
 func cepHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
+
+	ctx, operationSpan := tracer.Start(ctx, "totalOperation")
+	defer operationSpan.End()
+
 	queryValues := r.URL.Query()
 	cep := queryValues.Get("cep")
-	fmt.Println(cep)
-	fmt.Println("CHAMAA")
-
+	_, getViaCepDataSpan := tracer.Start(context.Background(), "api_cep_call")
 	responseCep, err := getViaCepData("http://viacep.com.br/", cep)
+	getViaCepDataSpan.End()
 
 	if err != nil {
 		http.Error(w, "invalid zipcode", http.StatusUnprocessableEntity)
@@ -106,16 +122,22 @@ func cepHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, getWeatherApiSpan := tracer.Start(context.Background(), "api_weather_call")
 	weather, err := handleWeatherApiCall("http://api.weatherapi.com/v1/current.json", responseCep.Localidade)
+	getWeatherApiSpan.End()
+
 	if err != nil {
 		http.Error(w, "error fetching weather data", http.StatusInternalServerError)
 		return
 	}
 
-	response := TemperatureResponse{
-		TempC: weather.Current.TempC,
-		TempF: weather.Current.TempF,
-		TempK: weather.Current.TempC + 273.15,
+	response := FullResponse{
+		City: responseCep.Localidade,
+		TemperatureResponse: TemperatureResponse{
+			TempC: weather.Current.TempC,
+			TempF: weather.Current.TempF,
+			TempK: weather.Current.TempC + 273.15,
+		},
 	}
 
 	jsonResponse, err := json.Marshal(response)
@@ -130,6 +152,7 @@ func cepHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	tracing.InitTracer()
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("Error loading .env file, continuing with environment variables")
