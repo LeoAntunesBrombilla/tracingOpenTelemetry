@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  service_a:
+    build:
+      context: ./service_a
+    ports:
+      - "8080:8080"
+    depends_on:
+      - service_b
+
+  service_b:
+    build:
+      context: ./service_b
+    ports:
+      - "8081:8081"
+
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
